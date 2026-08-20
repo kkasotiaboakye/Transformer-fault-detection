@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>AE Fault Monitor</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: #0d1117;
+    color: #e6edf3;
+    padding: 20px;
+    min-height: 100vh;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: 2fr 1fr;
+    grid-template-rows: auto auto 1fr;
+    gap: 20px;
+    max-width: 1600px;
+    margin: 0 auto;
+    height: calc(100vh - 40px);
+  }
+  .panel {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 12px;
+    padding: 20px;
+  }
+  .status-panel {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 30px 40px;
+    transition: background 0.3s;
+  }
+  .status-panel.healthy { background: linear-gradient(90deg, #0d331d, #0d1117); border-color: #2ea043; }
+  .status-panel.fault { background: linear-gradient(90deg, #4c1a1a, #0d1117); border-color: #f85149; animation: pulse 1s infinite; }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 rgba(248,81,73,0.4); }
+    50% { box-shadow: 0 0 30px rgba(248,81,73,0.6); }
+  }
+  .status-label { font-size: 14px; text-transform: uppercase; letter-spacing: 2px; color: #8b949e; }
+  .status-value { font-size: 42px; font-weight: 700; margin-top: 8px; }
+  .status-value.healthy-text { color: #3fb950; }
+  .status-value.fault-text { color: #f85149; }
+  .status-meta { text-align: right; font-size: 13px; color: #8b949e; line-height: 1.6; }
+  .status-meta strong { color: #e6edf3; font-size: 16px; }
+
+  .waveform-panel { grid-row: 2; }
+  .waveform-panel h2 { font-size: 14px; color: #8b949e; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 1px; }
+  #waveformChart { max-height: 220px; }
+
+  .probs-panel { grid-row: 2; }
+  .probs-panel h2 { font-size: 14px; color: #8b949e; margin-bottom: 16px; text-transform: uppercase; letter-spacing: 1px; }
+  .prob-bar-row { margin-bottom: 14px; }
+  .prob-label { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 4px; }
+  .prob-bar-bg { background: #21262d; height: 20px; border-radius: 4px; overflow: hidden; }
+  .prob-bar-fill { height: 100%; transition: width 0.4s ease; border-radius: 4px; }
+  .prob-bar-fill.arcing { background: #f0883e; }
+  .prob-bar-fill.mechanical { background: #58a6ff; }
+  .prob-bar-fill.partial_discharge { background: #d2a8ff; }
+
+  .events-panel { grid-column: 1 / -1; grid-row: 3; overflow-y: auto; }
+  .events-panel h2 { font-size: 14px; color: #8b949e; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 1px; display: flex; justify-content: space-between; align-items: center; }
+  .toggle-btn {
+    background: #21262d;
+    color: #e6edf3;
+    border: 1px solid #30363d;
+    padding: 6px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .toggle-btn:hover { background: #30363d; }
+  .toggle-btn.active { background: #1f6feb; border-color: #1f6feb; }
+  .event {
+    display: grid;
+    grid-template-columns: 100px 80px 1fr 1fr 100px;
+    padding: 10px 12px;
+    border-bottom: 1px solid #21262d;
+    font-size: 13px;
+    align-items: center;
+  }
+  .event.fault { background: rgba(248,81,73,0.08); }
+  .event.suppressed { background: rgba(240, 136, 62, 0.05); opacity: 0.7; }
+  .event .time { color: #8b949e; font-family: monospace; }
+  .event .batch { color: #8b949e; font-family: monospace; }
+  .event .pred { font-weight: 600; }
+  .event .pred.fault { color: #f85149; }
+  .event .pred.suppressed { color: #f0883e; font-style: italic; }
+  .event .gt { color: #8b949e; font-size: 12px; }
+  .event .gt.hidden { display: none; }
+  .event .conf { color: #8b949e; font-family: monospace; text-align: right; }
+  .suppressed-badge {
+    display: inline-block;
+    font-size: 10px;
+    background: #f0883e;
+    color: #0d1117;
+    padding: 2px 6px;
+    border-radius: 3px;
+    margin-left: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 600;
+  }
+</style>
+</head>
+<body>
+<div class="grid">
+  <div class="panel status-panel healthy" id="statusPanel">
+    <div>
+      <div class="status-label">System Status</div>
+      <div class="status-value healthy-text" id="statusValue">MONITORING</div>
+    </div>
+    <div class="status-meta">
+      Batches: <strong id="batchCount">0</strong><br>
+      Faults: <strong id="faultCount">0</strong><br>
+      Suppressed: <strong id="suppCount">0</strong><br>
+      Avg latency: <strong id="avgLatency">—</strong> ms
+      Last signal: <strong id="lastLatency">—</strong> ms
+    </div>
+  </div>
+
+  <div class="panel waveform-panel">
+    <h2>Live Signal Waveform</h2>
+    <canvas id="waveformChart"></canvas>
+  </div>
+
+  <div class="panel probs-panel">
+    <h2>Last Fault Probabilities</h2>
+    <div id="probsContainer">
+      <div class="prob-bar-row">
+        <div class="prob-label"><span>Arcing</span><span id="prob-arcing">0%</span></div>
+        <div class="prob-bar-bg"><div class="prob-bar-fill arcing" id="bar-arcing" style="width: 0%"></div></div>
+      </div>
+      <div class="prob-bar-row">
+        <div class="prob-label"><span>Mechanical</span><span id="prob-mechanical">0%</span></div>
+        <div class="prob-bar-bg"><div class="prob-bar-fill mechanical" id="bar-mechanical" style="width: 0%"></div></div>
+      </div>
+      <div class="prob-bar-row">
+        <div class="prob-label"><span>Partial Discharge</span><span id="prob-partial_discharge">0%</span></div>
+        <div class="prob-bar-bg"><div class="prob-bar-fill partial_discharge" id="bar-partial_discharge" style="width: 0%"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel events-panel">
+    <h2>
+      Recent Events
+      <button class="toggle-btn" id="toggleGT">Show Ground Truth</button>
+    </h2>
+    <div id="eventsList"></div>
+  </div>
+</div>
+
+<script>
+// --- Suppression threshold (UI-layer only; pipeline stays untouched) ---
+const MECHANICAL_CONFIDENCE_THRESHOLD = 0.9995;
+
+function checkSuppressed(payload) {
+  if (payload.status !== 'fault') return false;
+  if (payload.predicted !== 'mechanical') return false;
+  return payload.probabilities.mechanical < MECHANICAL_CONFIDENCE_THRESHOLD;
+}
+
+// --- Local UI-side stats (not tracked server-side) ---
+const localStats = { suppressions_count: 0 };
+
+// --- Waveform chart setup ---
+const MAX_WAVEFORM_POINTS = 500;
+const waveformData = new Array(MAX_WAVEFORM_POINTS).fill(0);
+const ctx = document.getElementById('waveformChart').getContext('2d');
+const waveformChart = new Chart(ctx, {
+  type: 'line',
+  data: {
+    labels: waveformData.map((_, i) => i),
+    datasets: [{
+      data: waveformData,
+      borderColor: '#3fb950',
+      borderWidth: 1,
+      pointRadius: 0,
+      tension: 0.1,
+    }]
+  },
+  options: {
+    animation: false,
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { display: false },
+      y: { grid: { color: '#21262d' }, ticks: { color: '#8b949e', font: { size: 10 } } }
+    }
+  }
+});
+
+// --- Ground truth toggle ---
+let showGroundTruth = false;
+const toggleBtn = document.getElementById('toggleGT');
+toggleBtn.addEventListener('click', () => {
+  showGroundTruth = !showGroundTruth;
+  toggleBtn.textContent = showGroundTruth ? 'Hide Ground Truth' : 'Show Ground Truth';
+  toggleBtn.classList.toggle('active', showGroundTruth);
+  document.querySelectorAll('.event .gt').forEach(el => {
+    el.classList.toggle('hidden', !showGroundTruth);
+  });
+});
+
+// --- Event list ---
+const MAX_EVENTS = 10;
+const eventsList = document.getElementById('eventsList');
+
+function formatTime() {
+  const d = new Date();
+  return d.toTimeString().split(' ')[0];
+}
+
+function addEvent(payload) {
+  const isFault = payload.status === 'fault';
+  const isSuppressed = checkSuppressed(payload);
+  const pred = isFault ? payload.predicted : 'healthy';
+  const conf = isFault
+    ? (Math.max(...Object.values(payload.probabilities)) * 100).toFixed(1) + '%'
+    : '—';
+
+  let eventClass = 'event';
+  let predClass = 'pred';
+  let badge = '';
+  if (isSuppressed) {
+    eventClass += ' suppressed';
+    predClass += ' suppressed';
+    badge = '<span class="suppressed-badge">suppressed</span>';
+  } else if (isFault) {
+    eventClass += ' fault';
+    predClass += ' fault';
+  }
+
+  const row = document.createElement('div');
+  row.className = eventClass;
+  row.innerHTML = `
+    <span class="time">${formatTime()}</span>
+    <span class="batch">#${payload.batch}</span>
+    <span class="${predClass}">${pred}${badge}</span>
+    <span class="gt ${showGroundTruth ? '' : 'hidden'}">GT: ${payload.ground_truth}</span>
+    <span class="conf">${conf}</span>
+  `;
+  eventsList.insertBefore(row, eventsList.firstChild);
+  while (eventsList.children.length > MAX_EVENTS) eventsList.removeChild(eventsList.lastChild);
+}
+
+// --- Status panel ---
+const statusPanel = document.getElementById('statusPanel');
+const statusValue = document.getElementById('statusValue');
+let statusTimeout = null;
+
+function updateStatus(payload) {
+  if (payload.status === 'fault' && !checkSuppressed(payload)) {
+    statusPanel.classList.remove('healthy');
+    statusPanel.classList.add('fault');
+    statusValue.classList.remove('healthy-text');
+    statusValue.classList.add('fault-text');
+    statusValue.textContent = payload.predicted.toUpperCase().replace('_', ' ');
+
+    if (statusTimeout) clearTimeout(statusTimeout);
+    statusTimeout = setTimeout(() => {
+      statusPanel.classList.remove('fault');
+      statusPanel.classList.add('healthy');
+      statusValue.classList.remove('fault-text');
+      statusValue.classList.add('healthy-text');
+      statusValue.textContent = 'MONITORING';
+    }, 3000);
+  }
+}
+
+// --- Probability bars ---
+function updateProbs(probs) {
+  ['arcing', 'mechanical', 'partial_discharge'].forEach(cls => {
+    const pct = (probs[cls] * 100).toFixed(1);
+    document.getElementById('bar-' + cls).style.width = pct + '%';
+    document.getElementById('prob-' + cls).textContent = pct + '%';
+  });
+}
+
+// --- Stats ---
+function updateStats(s) {
+  document.getElementById('batchCount').textContent = s.total_batches;
+  // Show raw server-side fault count minus locally-detected suppressions,
+  // so the "Faults" number reflects unsuppressed faults only.
+  const genuineFaults = Math.max(0, (s.faults_detected || 0) - localStats.suppressions_count);
+  document.getElementById('faultCount').textContent = genuineFaults;
+  document.getElementById('suppCount').textContent = localStats.suppressions_count;
+  document.getElementById('avgLatency').textContent = s.avg_latency_ms;
+}
+
+// --- WebSocket connection ---
+const ws = new WebSocket('ws://' + location.host + '/ws');
+ws.onmessage = (event) => {
+  const payload = JSON.parse(event.data);
+
+  // Update waveform (append new samples, drop oldest)
+  if (payload.waveform && payload.waveform.length > 0) {
+    waveformData.splice(0, payload.waveform.length);
+    waveformData.push(...payload.waveform);
+    waveformChart.data.datasets[0].data = waveformData;
+    waveformChart.update('none');
+  }
+
+  // Count suppressions on the browser side
+  if (checkSuppressed(payload)) {
+    localStats.suppressions_count += 1;
+  }
+
+  updateStats(payload.stats);
+  document.getElementById('lastLatency').textContent = payload.latency_ms;
+  updateStatus(payload);
+  addEvent(payload);
+
+  // Only update the probability bars on real (not suppressed) faults,
+  // so a low-confidence blip doesn't overwrite the last real fault display.
+  if (payload.status === 'fault' && payload.probabilities && !checkSuppressed(payload)) {
+    updateProbs(payload.probabilities);
+  }
+};
+ws.onerror = () => console.error('WebSocket error');
+ws.onclose = () => console.log('WebSocket closed');
+</script>
+</body>
+</html>
